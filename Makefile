@@ -10,6 +10,9 @@ icsim: icsim.o lib.o
 controls: controls.o
 	$(CC) $(CFLAGS) -o controls controls.c $(LDFLAGS)
 
+bcm: bcm.o
+	$(CC) $(CFLAGS) -o bcm bcm.c $(LDFLAGS)
+
 lib.o:
 	$(CC) lib.c
 

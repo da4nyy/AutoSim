@@ -159,41 +159,89 @@ void updateSharedData() {
   sendPkt(CAN_MTU);
 }
 
-void sendLock(char door) {
-	doorState |= door;
-  updateSharedData();
 
-	memset(&cf, 0, sizeof(cf));
-	cf.can_id = doorId;
-	cf.len = doorLen;
-	cf.data[doorPos] = doorState;
-  if (doorPos) randomizePkt(0, doorPos);
-	if (doorLen != doorPos + 1) randomizePkt(doorPos + 1, doorLen);
-	sendPkt(CAN_MTU);
+/**
+ * Send a minimal door command to the BCM (ID=0x123).
+ * data[0] = 1 => lock all, 0 => unlock all
+ */
+void sendBCMDoorCommand(int lockOrUnlock)
+{
+    struct can_frame tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.can_id  = 0x123;    // Must match what ICSim expects for door commands
+    tx.can_dlc = 1;
+    tx.data[0] = lockOrUnlock ? 1 : 0; // 1=LOCK, 0=UNLOCK
+
+    if (write(s, &tx, sizeof(tx)) < 0) {
+        perror("[controls] sendBCMDoorCommand");
+    } else {
+        printf("[controls] Sent door command 0x123 => %s\n",
+               lockOrUnlock ? "LOCK" : "UNLOCK");
+    }
 }
 
-void sendUnlock(char door) {
-	doorState &= ~door;
-  updateSharedData();
+void sendLock(char doorBit) {
+    // doorBit is 1,2,4,8 for each door
+    doorState |= doorBit;  // Set that bit
+    // (Optional) updateSharedData() if you still want that
+    // updateSharedData();
 
-	memset(&cf, 0, sizeof(cf));
-	cf.can_id = doorId;
-	cf.len = doorLen;
-	cf.data[doorPos] = doorState;
-  if (doorPos) randomizePkt(0, doorPos);
-	if (doorLen != doorPos + 1) randomizePkt(doorPos + 1, doorLen);
-	sendPkt(CAN_MTU);
+    memset(&cf, 0, sizeof(cf));
+    cf.can_id  = 0x123;   // Instead of doorId
+    cf.len     = 1;       // Just sending data[0]
+    cf.data[0] = doorState;  // Bits for all 4 doors
+
+    // If you like randomization or other bytes, you can add them here
+    // but the minimal approach is just one byte that has the bitmask.
+
+    sendPkt(CAN_MTU);
+}
+// --------------------------------------------------------------------
+// Instead of "lock all" or "unlock all", we now manipulate doorState
+// bits: bit0 => door1, bit1 => door2, bit2 => door3, bit3 => door4
+//  1=locked, 0=unlocked
+// Then we send the entire bitmask in data[0] at ID=0x123
+// --------------------------------------------------------------------
+void sendDoorBitmask() {
+    memset(&cf, 0, sizeof(cf));
+    cf.can_id = 0x123;   // must match ICSim’s expected BCM_CMD_ID
+    cf.len    = 1;
+    cf.data[0] = doorState;  // the 4 bits for door locks
+    sendPkt(CAN_MTU);
+
+    printf("[controls] Sent door bitmask=0x%02X on ID=0x123\n", doorState);
+}
+void sendUnlock(char doorBit) {
+    doorState &= ~doorBit; // Clear that bit
+    // (Optional) updateSharedData();
+
+    memset(&cf, 0, sizeof(cf));
+    cf.can_id  = 0x123; 
+    cf.len     = 1;
+    cf.data[0] = doorState;
+
+    sendPkt(CAN_MTU);
+}
+/**
+ * Toggle one door’s state, then send updated bitmask
+ *  doorIdx => 0..3
+ *  doorValue => 1,2,4,8 for door1..4
+ */
+void updateDoorStatus(char doorIdx, char doorValue) {
+    // Flip ICSim’s local doorStatus
+    if (doorStatus[doorIdx] == DOOR_LOCKED) {
+        doorStatus[doorIdx] = DOOR_UNLOCKED;
+        // Clear that bit in doorState
+        doorState &= ~(doorValue);
+    } else {
+        doorStatus[doorIdx] = DOOR_LOCKED;
+        // Set that bit in doorState
+        doorState |= doorValue;
+    }
+    // Now send entire bitmask out
+    sendDoorBitmask();
 }
 
-void updateDoorStatus(char doorId, char doorValue) {
-  if (doorStatus[doorId] == DOOR_LOCKED) {
-    doorStatus[doorId] = DOOR_UNLOCKED;
-    sendUnlock(doorValue);
-  } else {
-    doorStatus[doorId] = DOOR_LOCKED;
-    sendLock(doorValue);
-  }
-}
 
 void sendSpeed() {
 	int kph = (currentSpeed / 0.6213751) * 100;

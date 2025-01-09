@@ -173,7 +173,7 @@ SDL_Texture *spriteAltTex = NULL;
 SDL_Texture *scoreboardTex = NULL;
 SDL_Texture *trafficCarTexture = NULL; // Texture for traffic cars
 int running_flag = 0;
-
+static unsigned char doorState = 0x00;
 FILE *fptr;
 
 SDL_Texture *roadTexture = NULL;  // For the scrolling road background
@@ -213,16 +213,29 @@ void spawnTrafficCar() {
 
     // Define boundaries for the left lane
     int leftLaneStart = ROAD_LEFT_BOUNDARY;  // Left lane start
-    int leftLaneEnd = ROAD_LEFT_BOUNDARY - TRAFFIC_CAR_WIDTH; // Left lane end
+    int leftLaneEnd = leftLaneStart + TRAFFIC_CAR_WIDTH; // Left lane width
 
-    // Spawn a new car within the left lane boundaries
+    int minimumDistance = 200; // Minimum vertical distance between cars
     TrafficCar newCar;
-    newCar.x = leftLaneStart - 50 + rand() % (leftLaneEnd - leftLaneStart);
-    newCar.y = -TRAFFIC_CAR_HEIGHT; // Spawn above the visible area
-    newCar.rect = (SDL_Rect){newCar.x, newCar.y, TRAFFIC_CAR_WIDTH, TRAFFIC_CAR_HEIGHT};
 
+    // Spawn above the visible area
+    newCar.x = leftLaneStart;
+    newCar.y = -TRAFFIC_CAR_HEIGHT;
+
+    // Ensure the new car does not violate the minimum distance from the nearest car
+    for (int i = 0; i < trafficCarCount; i++) {
+        if (trafficCars[i].x == leftLaneStart && 
+            abs(newCar.y - trafficCars[i].y) < minimumDistance) {
+            return; // Do not spawn if it violates the minimum distance
+        }
+    }
+
+    // Add the new car to the array
+    newCar.rect = (SDL_Rect){newCar.x, newCar.y, TRAFFIC_CAR_WIDTH, TRAFFIC_CAR_HEIGHT};
     trafficCars[trafficCarCount++] = newCar;
 }
+
+
 
 // Function to update traffic car positions
 void updateTrafficCars() {
@@ -530,49 +543,53 @@ void drawRoadAndLights() {
 
 /* Updates door unlocks simulated by door open icons */
 void drawDoors() {
-  SDL_Rect door_area, update, pos;
-  door_area.x = 674;
-  door_area.y = 432;
-  door_area.w = 81;
-  door_area.h = 78;
-  SDL_RenderCopy(renderer, baseTexture, &door_area, &door_area);
-  // No update if all doors are locked
-  if(doorStatus[0] == DOOR_LOCKED && doorStatus[1] == DOOR_LOCKED &&
-     doorStatus[2] == DOOR_LOCKED && doorStatus[3] == DOOR_LOCKED) return;
-  // Make the base body red if even one door is unlocked
-  update.x = 693;
-  update.y = 432;
-  update.w = 43;
-  update.h = 78;
-  SDL_RenderCopy(renderer, spriteTex, &update, &update);
-  if(doorStatus[0] == DOOR_UNLOCKED) {
-    update.x = 678;
-    update.y = 456;
-    update.w = 18;
-    update.h = 17;
-    SDL_RenderCopy(renderer, spriteTex, &update, &update);
-  }
-  if(doorStatus[1] == DOOR_UNLOCKED) {
-    update.x = 738;
-    update.y = 456;
-    update.w = 18;
-    update.h = 18;
-    SDL_RenderCopy(renderer, spriteTex, &update, &update);
-  }
-  if(doorStatus[2] == DOOR_UNLOCKED) {
-    update.x = 678;
-    update.y = 481;
-    update.w = 18;
-    update.h = 18;
-    SDL_RenderCopy(renderer, spriteTex, &update, &update);
-  }
-  if(doorStatus[3] == DOOR_UNLOCKED) {
-    update.x = 738;
-    update.y = 481;
-    update.w = 18;
-    update.h = 18;
-    SDL_RenderCopy(renderer, spriteTex, &update, &update);
-  }
+    SDL_Rect door_area, update;
+    door_area.x = 674;
+    door_area.y = 432;
+    door_area.w = 81;
+    door_area.h = 78;
+    SDL_RenderCopy(renderer, baseTexture, &door_area, &door_area);
+
+    // If any door is unlocked, update the base with the red body sprite
+    if (doorStatus[0] == DOOR_UNLOCKED || doorStatus[1] == DOOR_UNLOCKED ||
+        doorStatus[2] == DOOR_UNLOCKED || doorStatus[3] == DOOR_UNLOCKED) {
+        update.x = 693;
+        update.y = 432;
+        update.w = 43;
+        update.h = 78;
+        SDL_RenderCopy(renderer, spriteTex, &update, &update);
+    }
+
+    // Draw individual door lock/unlock icons
+    if (doorStatus[0] == DOOR_UNLOCKED) {
+        update.x = 678;
+        update.y = 456;
+        update.w = 18;
+        update.h = 17;
+        SDL_RenderCopy(renderer, spriteTex, &update, &update);
+    }
+    if (doorStatus[1] == DOOR_UNLOCKED) {
+        update.x = 738;
+        update.y = 456;
+        update.w = 18;
+        update.h = 18;
+        SDL_RenderCopy(renderer, spriteTex, &update, &update);
+    }
+    if (doorStatus[2] == DOOR_UNLOCKED) {
+        update.x = 678;
+        update.y = 481;
+        update.w = 18;
+        update.h = 18;
+        SDL_RenderCopy(renderer, spriteTex, &update, &update);
+    }
+    if (doorStatus[3] == DOOR_UNLOCKED) {
+        update.x = 738;
+        update.y = 481;
+        update.w = 18;
+        update.h = 18;
+        SDL_RenderCopy(renderer, spriteTex, &update, &update);
+    }
+
 }
 
 /* Updates turn signals */
@@ -813,33 +830,90 @@ void updateSignalStatus(struct canfd_frame *cf, int maxdlen) {
         validateChallenge(CHALLENGE_TURN_SIGNALS);
 }
 
+/**
+ * ICSim now uses this helper to send door lock/unlock commands to ID=0x123.
+ * The actual lock/unlock logic is done by an external BCM.
+ */
+void sendDoorCommand(int lockOrUnlock) {
+    struct can_frame tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.can_id  = 0x123;  // Must match the BCM_CMD_ID in bcm.c
+    tx.can_dlc = 1;
+    tx.data[0] = (lockOrUnlock) ? 1 : 0; // 1=Lock, 0=Unlock
+
+    if (write(can_socket, &tx, sizeof(tx)) < 0) {
+        perror("[ICSim] sendDoorCommand");
+    } else {
+        printf("[ICSim] Sent door command (0x123) => %s\n",
+               lockOrUnlock ? "LOCK" : "UNLOCK");
+    }
+}
+
+
+void sendLock(char doorBit)
+{
+    // doorBit = CAN_DOOR1_LOCK (0x01), or CAN_DOOR2_LOCK (0x02), etc.
+    doorState |= doorBit;  // set that bit => locked
+
+    struct can_frame tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.can_id  = 0x123;   // BCM command
+    tx.can_dlc = 1;
+    tx.data[0] = doorState;
+
+    if (write(can_socket, &tx, sizeof(tx)) < 0) {
+        perror("[ICSim] sendLock");
+    } else {
+        printf("[ICSim] Sent LOCK for bitmask=0x%02X to ID=0x123\n", doorState);
+    }
+}
+
+void sendUnlock(char doorBit)
+{
+    doorState &= ~doorBit; // clear that bit => unlocked
+
+    struct can_frame tx;
+    memset(&tx, 0, sizeof(tx));
+    tx.can_id  = 0x123;
+    tx.can_dlc = 1;
+    tx.data[0] = doorState;
+
+    if (write(can_socket, &tx, sizeof(tx)) < 0) {
+        perror("[ICSim] sendUnlock");
+    } else {
+        printf("[ICSim] Sent UNLOCK for bitmask=0x%02X to ID=0x123\n", doorState);
+    }
+}
 
 /* Parses CAN frame and updates door status */
+/* Parses CAN frame and updates door status */
 void updateDoorStatus(struct canfd_frame *cf, int maxdlen) {
-  int len = (cf->len > maxdlen) ? maxdlen : cf->len;
-  if(len < doorPos) return;
-  pristine = 0;
-  if(cf->data[doorPos] & CAN_DOOR1_LOCK) {
-      doorStatus[0] = DOOR_LOCKED;
-  } else {
-      doorStatus[0] = DOOR_UNLOCKED;
-  }
-  if(cf->data[doorPos] & CAN_DOOR2_LOCK) {
-      doorStatus[1] = DOOR_LOCKED;
-  } else {
-      doorStatus[1] = DOOR_UNLOCKED;
-  }
-  if(cf->data[doorPos] & CAN_DOOR3_LOCK) {
-      doorStatus[2] = DOOR_LOCKED;
-  } else {
-      doorStatus[2] = DOOR_UNLOCKED;
-  }
-  if(cf->data[doorPos] & CAN_DOOR4_LOCK) {
-      doorStatus[3] = DOOR_LOCKED;
-  } else {
-      doorStatus[3] = DOOR_UNLOCKED;
-  }
+    // Ensure valid data length
+    if (cf->len < 1) {  // BCM sends only 1 byte
+        printf("[ICSim Debug] Invalid CAN frame length: %d\n", cf->len);
+        return;
+    }
+
+    // Get the door state bitmask
+    unsigned char bits = cf->data[0];  // Only one byte is sent
+    printf("[ICSim Debug] Received door bitmask: 0x%02X\n", bits);
+
+    // Update door states based on bitmask
+    doorStatus[0] = (bits & CAN_DOOR1_LOCK) ? DOOR_UNLOCKED : DOOR_LOCKED;
+    doorStatus[1] = (bits & CAN_DOOR2_LOCK) ? DOOR_UNLOCKED : DOOR_LOCKED;
+    doorStatus[2] = (bits & CAN_DOOR3_LOCK) ? DOOR_UNLOCKED : DOOR_LOCKED;
+    doorStatus[3] = (bits & CAN_DOOR4_LOCK) ? DOOR_UNLOCKED : DOOR_LOCKED;
+
+    printf("[ICSim Debug] Door States Updated: %d %d %d %d\n",
+           doorStatus[0], doorStatus[1], doorStatus[2], doorStatus[3]);
+
+    // Update the GUI
+    updateIC();
 }
+
+
+
+
 
 void sendFrameError(int func, int errorCode) {
   memset(&cf, 0, sizeof(cf));
@@ -1486,7 +1560,13 @@ int main(int argc, char *argv[]) {
             }
             updateSharedData(&frame, maxdlen);
         }
-        if (frame.can_id == doorId) updateDoorStatus(&frame, maxdlen);
+        //if (frame.can_id == doorId) updateDoorStatus(&frame, maxdlen);
+        if (frame.can_id == 0x124) {
+            // data[0] = 1 => locked, 0 => unlocked
+          printf("[ICSim Debug] Received CAN ID 0x124, Data=0x%02X\n", frame.data[0]);
+          pristine = 0;  // Mark as updated to force redraw
+          updateDoorStatus(&frame, maxdlen);
+        }
         if (frame.can_id == signalId) updateSignalStatus(&frame, maxdlen);
         if (frame.can_id == speedId) drawSpeedStatus(&frame, maxdlen);
         if (frame.can_id == warningId) updateWarningStatus(&frame, maxdlen);
